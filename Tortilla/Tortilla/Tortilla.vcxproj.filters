@@ -1,0 +1,127 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Source Files\lwIP">
+      <UniqueIdentifier>{ea662a6a-2d72-4334-831b-9dfd7e89df8a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\lwIP\core">
+      <UniqueIdentifier>{9317567f-fb79-4223-8e87-503e4cbfefb5}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\lwIP\core\ipv4">
+      <UniqueIdentifier>{3168ccc9-2c70-41ec-840d-621f983e12fc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\lwIP\api">
+      <UniqueIdentifier>{26642ded-04f0-460d-8afc-8735c65a523d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\lwIP\netif">
+      <UniqueIdentifier>{3447f84f-9f31-47ee-8791-2f6945431b14}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\lwIP\win32">
+      <UniqueIdentifier>{724f78b1-6358-4bf2-9642-e511dad55a42}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="lwIP\src\core\memp.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\pbuf.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\tcp.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\tcp_out.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\raw.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\mem.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\timers.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\init.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\def.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\tcp_in.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\netif.c">
+      <Filter>Source Files\lwIP\core</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\ipv4\ip.c">
+      <Filter>Source Files\lwIP\core\ipv4</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\ipv4\ip_addr.c">
+      <Filter>Source Files\lwIP\core\ipv4</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\ipv4\ip_frag.c">
+      <Filter>Source Files\lwIP\core\ipv4</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\core\ipv4\inet_chksum.c">
+      <Filter>Source Files\lwIP\core\ipv4</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\api\netbuf.c">
+      <Filter>Source Files\lwIP\api</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\api\api_lib.c">
+      <Filter>Source Files\lwIP\api</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\api\api_msg.c">
+      <Filter>Source Files\lwIP\api</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\api\tcpip.c">
+      <Filter>Source Files\lwIP\api</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\api\sockets.c">
+      <Filter>Source Files\lwIP\api</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\src\netif\etharp.c">
+      <Filter>Source Files\lwIP\netif</Filter>
+    </ClCompile>
+    <ClCompile Include="lwIP\ports\win32\sys_arch.c">
+      <Filter>Source Files\lwIP\win32</Filter>
+    </ClCompile>
+    <ClCompile Include="Tortilla.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Tortilla.ini">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="LICENSE.txt">
+      <Filter>Resource Files</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="network.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="resource.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Tortilla.rc">
+      <Filter>Resource Files</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>

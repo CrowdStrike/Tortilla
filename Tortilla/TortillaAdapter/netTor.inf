@@ -1,0 +1,63 @@
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Net
+ClassGuid   = {4d36e972-e325-11ce-bfc1-08002be10318}
+Provider    = "CrowdStrike, Inc."
+DriverVer   = 07/31/2013, 1.00
+CatalogFile = Tortilla.cat
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = "Tortilla Adapter",,,""
+
+[SourceDisksFiles]
+tortilla.sys = 1,,
+
+[Manufacturer]
+CrowdStrike = Tortilla,NTx86,NTamd64
+
+[Tortilla]
+
+[Tortilla.NTx86]
+Tortilla Adapter = Tortilla.ndi, *tortilla
+
+[Tortilla.NTamd64]
+Tortilla Adapter = Tortilla.ndi, *tortilla
+
+[Tortilla.ndi.NT]
+Characteristics = 0x1   ; NCF_VIRTUAL
+*IfType = 6             ; IF_TYPE_ETHERNET_CSMACD
+*MediaType = 0          ; NdisMedium802_3
+*PhysicalMediaType = 0  ; NdisPhysicalMediumUnspecified
+AddReg = Tortilla.ndi.reg
+CopyFiles = Tortilla.CopyFiles
+
+[Tortilla.ndi.reg]
+HKR, Ndi, Service, 0, "Tortilla"
+HKR, Ndi\Interfaces, DefLower, 0, "nolower"
+HKR, Ndi\Interfaces, LowerRange, 0, "ethernet"
+HKR, Ndi\Interfaces, DefUpper, 0, "ndis5"
+HKR, Ndi\Interfaces, UpperRange, 0, "ndis5"
+
+[Tortilla.ndi.NT.Services]
+AddService = Tortilla, 2, Tortilla.AddService, Tortilla.AddEventLog
+
+[Tortilla.AddService]
+DisplayName = "Tortilla Driver"
+ServiceType = 1
+StartType = 3
+ErrorControl = 1
+ServiceBinary = %12%\tortilla.sys
+LoadOrderGroup = NDIS
+
+[Tortilla.AddEventLog]
+AddReg = Tortilla.AddEventLog.reg
+
+[Tortilla.AddEventLog.reg]
+HKR, , EventMessageFile, 0x00020000, "%%SystemRoot%%\System32\netevent.dll"
+HKR, , TypesSupported, 0x00010001, 7
+
+[Tortilla.CopyFiles]
+tortilla.sys, , , 2

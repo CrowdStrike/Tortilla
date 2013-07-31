@@ -1,0 +1,59 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Debug|Win32'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|Win32'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Release|Win32'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|Win32'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Release x64|Win32'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|Win32'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|Win32'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Debug x64|Win32'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Debug|x64'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Debug|x64'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Release|x64'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Debug|x64'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Release x64|x64'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win7 Release|x64'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Win8 Release|x64'">
+    <SignMode>TestSign</SignMode>
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Vista Debug x64|x64'">
+    <TestCertificate>..\TortillaTestSignedCertificate.pfx</TestCertificate>
+  </PropertyGroup>
+</Project>
