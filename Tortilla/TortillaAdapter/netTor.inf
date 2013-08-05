@@ -3,7 +3,7 @@ Signature   = "$WINDOWS NT$"
 Class       = Net
 ClassGuid   = {4d36e972-e325-11ce-bfc1-08002be10318}
 Provider    = "CrowdStrike, Inc."
-DriverVer   = 07/31/2013, 1.00
+DriverVer   = 08/05/2013, 1.01
 CatalogFile = Tortilla.cat
 
 [DestinationDirs]

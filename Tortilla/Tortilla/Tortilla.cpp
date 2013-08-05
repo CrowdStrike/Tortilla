@@ -1,7 +1,7 @@
 /*!
     @file       Tortilla.cpp
     @author     Jason Geffner (jason@crowdstrike.com)
-    @brief      Tortilla Client v1.0 Beta
+    @brief      Tortilla Client v1.0.1 Beta
    
     @details    This product is produced independently from the Tor(r)
                 anonymity software and carries no guarantee from The Tor
@@ -55,6 +55,8 @@ typedef NTSTATUS (NTAPI* NTOPENSECTION_T)(
 //
 #define DHCP_LEASE_TIME 86400
 #define DNS_TTL         86400
+
+#define DHCP_BROADCAST_FLAG 0x8000
 
 typedef struct _PACKET_WITH_SIZE
 {
@@ -872,10 +874,20 @@ HandleDhcp (
     //
     // Set the Ethernet header
     //
-    memcpy(
-        &reply.fullDhcpPacket.EthernetHeader.dest,
-        &reply.fullDhcpPacket.EthernetHeader.src,
-        sizeof(reply.fullDhcpPacket.EthernetHeader.dest));
+    if (ntohs(reply.fullDhcpPacket.DhcpHeader.flags) & DHCP_BROADCAST_FLAG)
+    {
+        memset(
+            &reply.fullDhcpPacket.EthernetHeader.dest,
+            0xFF,
+            sizeof(reply.fullDhcpPacket.EthernetHeader.dest));
+    }
+    else
+    {
+        memcpy(
+            &reply.fullDhcpPacket.EthernetHeader.dest,
+            &reply.fullDhcpPacket.EthernetHeader.src,
+            sizeof(reply.fullDhcpPacket.EthernetHeader.dest));
+    }
     memcpy(
         &reply.fullDhcpPacket.EthernetHeader.src,
         g_abGatewayMacAddress,
@@ -891,10 +903,20 @@ HandleDhcp (
         &reply.fullDhcpPacket.IpHeader.src,
         g_abGatewayIpAddress,
         sizeof(reply.fullDhcpPacket.IpHeader.src));
-    memcpy(
-        &reply.fullDhcpPacket.IpHeader.dest,
-        g_abDhcpClientIpAddress,
-        sizeof(reply.fullDhcpPacket.IpHeader.dest));
+    if (ntohs(reply.fullDhcpPacket.DhcpHeader.flags) & DHCP_BROADCAST_FLAG)
+    {
+        memset(
+            &reply.fullDhcpPacket.IpHeader.dest,
+            0xFF,
+            sizeof(reply.fullDhcpPacket.IpHeader.dest));
+    }
+    else
+    {
+        memcpy(
+            &reply.fullDhcpPacket.IpHeader.dest,
+            g_abDhcpClientIpAddress,
+            sizeof(reply.fullDhcpPacket.IpHeader.dest));
+    }
     reply.fullDhcpPacket.IpHeader._chksum = 0;
     reply.fullDhcpPacket.IpHeader._chksum = inet_chksum(
         &reply.fullDhcpPacket.IpHeader,
@@ -3826,7 +3848,7 @@ wmain (
     //
     Log(
         White,
-        L"Tortilla v1.0 Beta\n"
+        L"Tortilla v1.0.1 Beta\n"
         L"by Jason Geffner (jason@crowdstrike.com)\n"
         L"and Cameron Gutman (cameron@crowdstrike.com)\n"
         L"CrowdStrike, Inc. Copyright (c) 2013.  All rights reserved.\n"
