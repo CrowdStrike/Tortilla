@@ -1,4 +1,4 @@
-Tortilla v1.0 Beta
+Tortilla v1.0.1 Beta
 by Jason Geffner (jason@crowdstrike.com)
 and Cameron Gutman (cameron@crowdstrike.com)
 
@@ -67,5 +67,7 @@ UNINSTALLATION INSTRUCTIONS
 
 RELEASE NOTES
 
+1.0.1 Beta
+-- Driver initialization fix + client fix for DHCP broadcasts
 1.0 Beta
 -- Initial release
