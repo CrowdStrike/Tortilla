@@ -1,4 +1,4 @@
-Tortilla v1.0.1 Beta
+Tortilla v1.1.0 Beta
 by Jason Geffner (jason@crowdstrike.com)
 and Cameron Gutman (cameron@crowdstrike.com)
 
@@ -14,7 +14,8 @@ Please see the LICENSE.txt file for complete licensing details.
 
 BUILD INSTRUCTIONS
 
-This distribution comes with a pre-built version of Tortilla.exe. If you would like to use the pre-built Tortilla.exe, you may skip to USAGE INSTRUCTIONS. Otherwise, follow the steps below to build Tortilla.exe with Visual Studio.
+A pre-built version of Tortilla.exe can be downloaded from http://www.crowdstrike.com/community-tools/
+If you would like to use the pre-built Tortilla.exe, you may skip to USAGE INSTRUCTIONS; otherwise, follow the steps below to build Tortilla.exe with Visual Studio using the source code from https://github.com/CrowdStrike/Tortilla
 
 Note: Building Tortilla will require WDK 8.0 or higher.
 
@@ -67,6 +68,8 @@ UNINSTALLATION INSTRUCTIONS
 
 RELEASE NOTES
 
+1.1.0 Beta
+-- Tortilla now uses non-blocking sockets for TCP and DNS, greatly reducing memory usage when making multiple simultaneous connections
 1.0.1 Beta
 -- Driver initialization fix + client fix for DHCP broadcasts
 1.0 Beta

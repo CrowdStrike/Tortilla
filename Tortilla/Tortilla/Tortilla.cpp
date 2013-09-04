@@ -1,7 +1,7 @@
 /*!
     @file       Tortilla.cpp
     @author     Jason Geffner (jason@crowdstrike.com)
-    @brief      Tortilla Client v1.0.1 Beta
+    @brief      Tortilla Client v1.1.0 Beta
    
     @details    This product is produced independently from the Tor(r)
                 anonymity software and carries no guarantee from The Tor
@@ -43,20 +43,22 @@ typedef NTSTATUS (NTAPI* NTOPENSECTION_T)(
     IN ACCESS_MASK DesiredAccess,
     IN POBJECT_ATTRIBUTES ObjectAttributes
 );
-#define STATUS_SUCCESS  0
+#define STATUS_SUCCESS              0
 
+//
 // In this context, MTU is the maximum size of a packet on the virtual wire
-#define MTU             (1500 + sizeof(eth_hdr))
-#define RECV_TIMEOUT_MS 100
-#define MAX_PACKETS_PER_ITERATION 10
+//
+#define MTU                         (1500 + sizeof(eth_hdr))
+#define RECV_TIMEOUT_MS             100
+#define MAX_PACKETS_PER_ITERATION   10
 
 //
 // 86400 seconds = 24 hours
 //
-#define DHCP_LEASE_TIME 86400
-#define DNS_TTL         86400
+#define DHCP_LEASE_TIME             86400
+#define DNS_TTL                     86400
 
-#define DHCP_BROADCAST_FLAG 0x8000
+#define DHCP_BROADCAST_FLAG         0x8000
 
 typedef struct _PACKET_WITH_SIZE
 {
@@ -101,6 +103,30 @@ typedef enum _LOG_COLOR
     Yellow =    FOREGROUND_INTENSITY | FOREGROUND_GREEN | FOREGROUND_RED
 } LOG_COLOR;
 
+typedef enum _ASYNCHRONOUS_SOCKET_STATE
+{
+    ConnectingToTorClient,
+    ConnectedToTorClient,
+    AuthenticationSent,
+    Authenticated,
+    DnsRequestSent,
+    TcpConnectionRequestSent
+} ASYNCHRONOUS_SOCKET_STATE;
+
+#pragma pack(push, 1)
+typedef struct _ASYNCHRONOUS_SOCKET_ITEM
+{
+    SOCKET s;
+    ASYNCHRONOUS_SOCKET_STATE state;
+    BOOL fDnsQuery;
+    BOOL fTypeAQuery;
+    CHAR szQueriedNameOrIp[DNS_MAX_NAME_BUFFER_LENGTH];
+    BYTE* abPacket;
+    SIZE_T cbPacket;
+    struct _ASYNCHRONOUS_SOCKET_ITEM* pNextItem;
+} ASYNCHRONOUS_SOCKET_ITEM;
+#pragma pack(pop)
+
 WCHAR g_wszEnableNetworkBindings[128];
 WCHAR g_wszIgnoreNetworkBindings[128];
 BYTE g_abGatewayMacAddress[ETHARP_HWADDR_LEN];
@@ -123,11 +149,22 @@ HANDLE g_hAesMutex;
 ACTIVE_SYN_ITEM* g_pActiveSyns;
 HANDLE g_hActiveSynMutex;
 
+ASYNCHRONOUS_SOCKET_ITEM* g_pAsynchronousSockets;
+HANDLE g_hAsiMutex;
+HWND g_hwndAsynchronousSocketEngine;
+
 HANDLE g_hConsoleOutput;
 HANDLE g_hLogMutex;
 
 struct netif netif;
 
+/*!
+    @brief Logs text to the console window
+
+    @param[in] color The color to use for printing the logged text
+    @param[in] wszFormat The format string for the logged text
+    @param[in] ... The arguments for the format string
+*/
 VOID
 Log (
     LOG_COLOR color,
@@ -177,7 +214,6 @@ Log (
             g_hLogMutex);
     }
 }
-
 
 /*!
     @brief Adds an active TCP SYN to the g_pActiveSyns linked list
@@ -525,7 +561,7 @@ FindAvailableEstablishedSocket (
     //
     // Iterate through the g_pAvailableEstablishedSockets linked list
     //
-    for(SOCKET_ITEM* pItem = g_pAvailableEstablishedSockets;
+    for (SOCKET_ITEM* pItem = g_pAvailableEstablishedSockets;
         pItem != NULL;
         pItem = pItem->pNextSocketItem)
     {
@@ -1106,116 +1142,6 @@ HandleArp (
 }
 
 /*! 
-    @brief Connects to and authenticates to the local Tor client
-
-    @return Returns a TCP SOCKET on success, returns INVALID_SOCKET on failure
-*/
-SOCKET
-ConnectToTorClient (
-    VOID
-    )
-{
-    BOOL fSuccess = FALSE;
-    SOCKET s = INVALID_SOCKET;
-    sockaddr_in sin;
-    BYTE abSocksAuthenticationRequest[3];
-    BYTE abSocksAuthenticationResponse[2];
-
-    //
-    // Create a new socket
-    //
-    s = socket(
-        AF_INET,
-        SOCK_STREAM,
-        IPPROTO_TCP);
-    if (s == INVALID_SOCKET)
-    {
-        Log(
-            Red,
-            L"Error in ConnectToTorClient(): Could not create a new socket "
-            L"object (0x%08X)\n",
-            WSAGetLastError());
-        goto exit;
-    }
-
-    //
-    // Connect to the local Tor client
-    //
-    sin.sin_family = AF_INET;
-    sin.sin_addr.S_un.S_addr = g_dwTorClientIpAddress;
-    sin.sin_port = htons(g_wTorClientTcpPort);
-    memset(
-        &sin.sin_zero,
-        0,
-        sizeof(sin.sin_zero));
-    if (0 != connect(
-        s,
-        (sockaddr*)&sin,
-        sizeof(sin)))
-    {
-        Log(
-            Red,
-            L"Error in ConnectToTorClient(): Could not connect to the local "
-            L"Tor client (0x%08X)\nEnsure that Tor is running and that its "
-            L"listening IP address and TCP port are\ncorrectly specified in "
-            L"Tortilla.ini\n",
-            WSAGetLastError());
-        goto exit;
-    }
-
-    //
-    // Perform authentication handshake with local Tor client
-    //
-    abSocksAuthenticationRequest[0] = 0x05; // SOCKS5
-    abSocksAuthenticationRequest[1] = 0x01; // 1 authentication method
-    abSocksAuthenticationRequest[2] = 0x00; // No authentication
-    if (SOCKET_ERROR == send(
-        s,
-        (char*)abSocksAuthenticationRequest,
-        sizeof(abSocksAuthenticationRequest),
-        0))
-    {
-        Log(
-            Red,
-            L"Error in ConnectToTorClient(): send() failed (0x%08X)\n",
-            WSAGetLastError());
-        goto exit;
-    }
-    if (sizeof(abSocksAuthenticationResponse) != recv(
-        s,
-        (char*)abSocksAuthenticationResponse,
-        sizeof(abSocksAuthenticationResponse),
-        0))
-    {
-        Log(
-            Red,
-            L"Error in ConnectToTorClient(): recv() failed (0x%08X)\n",
-            WSAGetLastError());
-        goto exit;
-    }
-    if (!((abSocksAuthenticationResponse[0] == 0x05) && // SOCKS5
-        (abSocksAuthenticationResponse[1] == 0x00)))    // No authentication
-    {
-        Log(
-            Red,
-            L"Error in ConnectToTorClient(): Could not authenticate to local "
-            L"Tor client\n");
-        goto exit;
-    }
-
-    fSuccess = TRUE;
-
-exit:
-    if ((!fSuccess) && (s != INVALID_SOCKET))
-    {
-        closesocket(s);
-        s = INVALID_SOCKET;
-    }
-
-    return s;
-}
-
-/*! 
     @brief Extracts the queried name or IP from a DNS query
 
     @param[in] abPacket Pointer to raw packet data
@@ -1445,211 +1371,60 @@ ExtractNameFromDnsQuery (
 }
 
 /*! 
-    @brief Responds to a DNS query from the virtual machine
+    @brief Sends a DNS response to the virtual machine
 
-    @param[in] pParameter Pointer to a PACKET_WITH_SIZE struct
-    @return Always returns 0
+    @param[in] pFullDnsPacket Pointer to the original DNS request packet data
+    @param[in] cbFullDnsPacket Length of the original DNS request packet
+    @param[in] fDnsAnswerFound If true, the DNS lookup succeeded
+    @param[in] fTypeAQuery If fDnsAnswerFound, TRUE if the DNS request was
+                           DNS_TYPE_A and FALSE if the DNS request was
+                           DNS_TYPE_PTR; reserved if !fDnsAnswerFound
+    @param[in] dwResolvedIp If fDnsAnswerFound and fTypeAQuery, resolved IP
+                            address in big-endian; otherwise reserved
+    @param[in] szResolvedName If fDnsAnswerFound and !fTypeAQuery, points to
+                              the resolved name; otherwise reserved
+    @param[in] cbResolvedName If fDnsAnswerFound and !fTypeAQuery, length of
+                              the resolved name; otherwise reserved
 */
-UINT
-__stdcall
-HandleDns (
-    VOID* pParameter
+VOID
+SendDnsResponse (
+    FULL_DNS_PACKET* pFullDnsPacket,
+    SIZE_T cbFullDnsPacket,
+    BOOL fDnsAnswerFound,
+    BOOL fTypeAQuery,
+    DWORD dwResolvedIp,
+    CHAR* szResolvedName,
+    SIZE_T cbResolvedName
     )
 {
-    SOCKET s = INVALID_SOCKET;
-    BYTE* abDnsResponsePacket = NULL;
-    BOOL fSuccess = FALSE;
-    BOOL fTypeAQuery;
-    CHAR szName[DNS_MAX_NAME_BUFFER_LENGTH];
-    BOOL fNameExtracted = FALSE;
-    PACKET_WITH_SIZE* pPacket = (PACKET_WITH_SIZE*)pParameter;
-    BYTE abSocksDnsRequest[DNS_MAX_NAME_LENGTH + 7];
-    SIZE_T cchNameLength;
-    DWORD dwIp;
-    DWORD dwResolvedIp;
-    BYTE cbResolvedName;
-    CHAR szResolvedName[DNS_MAX_NAME_BUFFER_LENGTH];
-    CHAR acSocksDnsResponse[DNS_MAX_NAME_LENGTH + 7];
-    INT cbSocksDnsResponse;
-    SIZE_T cbDnsResponsePacket;
-    FULL_DNS_PACKET* pFullDnsResponsePacket;
+    FULL_DNS_PACKET* pFullDnsResponsePacket = NULL;
+    SIZE_T cbFullDnsResponsePacket;
     DNS_ANSWER_RECORD* pDnsAnswerRecord;
-    BYTE cbLabel;
+    WORD cbLabel;
     CHAR* pcQName;
-    pbuf* pBuf;
     CHAR c;
+    pbuf* pBuf;
 
-    //
-    // Extract the hostname or IP address from the DNS query
-    //
-    if (!ExtractNameFromDnsQuery(
-        pPacket->abPacket,
-        pPacket->cbPacket,
-        szName,
-        _countof(szName),
-        &fTypeAQuery))
-    {
-        goto sendResponse;
-    }
-    fNameExtracted = TRUE;
-
-    //
-    // Connect to and authenticate to the local Tor client
-    //
-    s = ConnectToTorClient();
-    if (s == INVALID_SOCKET)
-    {
-        goto sendResponse;
-    }
-
-    //
-    // Send the DNS request to the local Tor client
-    //
-    cchNameLength = strlen(szName);
-    abSocksDnsRequest[0] = 0x05;                // SOCKS5
-    if (fTypeAQuery)
-    {
-        abSocksDnsRequest[1] = (BYTE)SOCKS_COMMAND_RESOLVE; // Command
-        abSocksDnsRequest[2] = 0x00;            // Reserved
-        abSocksDnsRequest[3] = 0x03;            // Address type: FQDN
-        abSocksDnsRequest[4] = cchNameLength;   // FQDN length
-        memcpy(                                 // FQDN
-            &abSocksDnsRequest[5],
-            szName,
-            cchNameLength);
-        abSocksDnsRequest[5 + cchNameLength] = 0x00;  // Port
-        abSocksDnsRequest[6 + cchNameLength] = 0x00;  // Port
-    }
-    else
-    {
-        abSocksDnsRequest[1] = (BYTE)SOCKS_COMMAND_RESOLVE_PTR; // Command
-        abSocksDnsRequest[2] = 0x00;    // Reserved
-        abSocksDnsRequest[3] = 0x01;    // Address type: IPv4
-        dwIp = inet_addr(szName);
-        memcpy(                         // IP
-            &abSocksDnsRequest[4],
-            &dwIp,
-            sizeof(dwIp));
-        abSocksDnsRequest[8] = 0x00;    // Port
-        abSocksDnsRequest[9] = 0x00;    // Port
-    }
-    if (SOCKET_ERROR == send(
-        s,
-        (char*)abSocksDnsRequest,
-        fTypeAQuery ? (7 + cchNameLength) : 10,
-        0))
-    {
-        Log(
-            Red,
-            L"Error in HandleDns(): Could not send DNS request to local Tor "
-            L"client (0x%08X)\n",
-            WSAGetLastError());
-        goto sendResponse;
-    }
-
-    //
-    // Get DNS response from local Tor client
-    //
-    cbSocksDnsResponse = recv(
-        s,
-        acSocksDnsResponse,
-        sizeof(acSocksDnsResponse),
-        0);
-    if (cbSocksDnsResponse == SOCKET_ERROR)
-    {
-        Log(
-            Red,
-            L"Error in HandleDns(): Could not receive DNS response from local "
-            L"Tor client (0x%08X)\n",
-            WSAGetLastError());
-        goto sendResponse;
-    }
-    if (fTypeAQuery)
-    {
-        //
-        // Query was a hostname, so validate that response is an IP address
-        //
-        if (!((cbSocksDnsResponse == 10) &&
-            (acSocksDnsResponse[0] == 0x05) &&  // SOCKS5
-            (acSocksDnsResponse[1] == 0x00) &&  // SOCKS5_SUCCEEDED
-            (acSocksDnsResponse[3] == 0x01)))   // IPv4 address
-        {
-            //wprintf_s(
-            //    L"Error in HandleDns(): DNS_TYPE_A lookup failed\n");
-            goto sendResponse;
-        }
-
-        //
-        // Save the response IP address
-        //
-        memcpy(
-            &dwResolvedIp,
-            &acSocksDnsResponse[4],
-            sizeof(dwResolvedIp));
-    }
-    else 
-    {
-        //
-        // Query was an IP address, so validate that response is a hostname
-        //
-        if (!((cbSocksDnsResponse >= 7) &&
-            (acSocksDnsResponse[0] == 0x05) &&  // SOCKS5
-            (acSocksDnsResponse[1] == 0x00) &&  // SOCKS5_SUCCEEDED
-            (acSocksDnsResponse[3] == 0x03)))   // Domain name
-        {
-            //wprintf_s(
-            //    L"Error in HandleDns(): DNS_TYPE_PTR lookup failed\n");
-            goto sendResponse;
-        }
-
-        //
-        // Validate the length of the resolved hostname
-        //
-        cbResolvedName = acSocksDnsResponse[4];
-        if ((cbResolvedName == 0) ||
-            (cbSocksDnsResponse != ((size_t)cbResolvedName + 7)))
-        {
-            Log(
-                Red,
-                L"Error in HandleDns(): DNS_TYPE_PTR lookup returned hostname "
-                L"with invalid length\n");
-            goto sendResponse;
-        }
-        
-        //
-        // Save the response hostname and NULL-terminate it
-        //
-        memcpy(
-            szResolvedName,
-            &acSocksDnsResponse[5],
-            cbResolvedName);
-        szResolvedName[cbResolvedName] = 0;
-    }
-
-    fSuccess = TRUE;
-
-
-sendResponse:
     //
     // Allocate a success/fail DNS response back to client
     //
-    cbDnsResponsePacket = pPacket->cbPacket;
-    if (fSuccess)
+    cbFullDnsResponsePacket = cbFullDnsPacket;
+    if (fDnsAnswerFound)
     {
         //
         // If we have a DNS answer to send back, allocate space for it
         //
-        cbDnsResponsePacket += sizeof(DNS_ANSWER_RECORD) + (fTypeAQuery ?
+        cbFullDnsResponsePacket += sizeof(DNS_ANSWER_RECORD) + (fTypeAQuery ?
             sizeof(dwResolvedIp) : ((size_t)cbResolvedName + 2));
     }
-    abDnsResponsePacket = (BYTE*)malloc(
-        cbDnsResponsePacket);
-    if (abDnsResponsePacket == NULL)
+    pFullDnsResponsePacket = (FULL_DNS_PACKET*)malloc(
+        cbFullDnsResponsePacket);
+    if (pFullDnsResponsePacket == NULL)
     {
         Log(
             Red,
             L"Error in HandleDns(): malloc(%d) failed\n",
-            cbDnsResponsePacket);
+            cbFullDnsResponsePacket);
         goto exit;
     }
 
@@ -1657,14 +1432,13 @@ sendResponse:
     // Copy the DNS request packet into the DNS response packet
     //
     memcpy(
-        abDnsResponsePacket,
-        pPacket->abPacket,
-        pPacket->cbPacket);
+        pFullDnsResponsePacket,
+        pFullDnsPacket,
+        cbFullDnsPacket);
 
     //
     // Set the Ethernet header
     //
-    pFullDnsResponsePacket = (FULL_DNS_PACKET*)abDnsResponsePacket;
     memcpy(
         &pFullDnsResponsePacket->EthernetHeader.dest,
         &pFullDnsResponsePacket->EthernetHeader.src,
@@ -1678,7 +1452,7 @@ sendResponse:
     // Set the IP header
     //
     pFullDnsResponsePacket->IpHeader._len = htons(
-        cbDnsResponsePacket -
+        cbFullDnsResponsePacket -
         sizeof(pFullDnsResponsePacket->EthernetHeader));
     memcpy(
         &pFullDnsResponsePacket->IpHeader.src,
@@ -1698,9 +1472,9 @@ sendResponse:
     //
     pFullDnsResponsePacket->UdpHeader.dest =
         pFullDnsResponsePacket->UdpHeader.src;
-    pFullDnsResponsePacket->UdpHeader.src = htons(53);
+    pFullDnsResponsePacket->UdpHeader.src = htons(DNS_PORT_HOST_ORDER);
     pFullDnsResponsePacket->UdpHeader.len = htons(
-        cbDnsResponsePacket -
+        cbFullDnsResponsePacket -
         sizeof(pFullDnsResponsePacket->EthernetHeader) -
         sizeof(pFullDnsResponsePacket->IpHeader));
     pFullDnsResponsePacket->UdpHeader.chksum = 0;
@@ -1716,22 +1490,22 @@ sendResponse:
     pFullDnsResponsePacket->DnsHeader.Reserved = FALSE;
     pFullDnsResponsePacket->DnsHeader.AuthenticatedData = FALSE;
     pFullDnsResponsePacket->DnsHeader.CheckingDisabled = FALSE;
-    pFullDnsResponsePacket->DnsHeader.ResponseCode = fSuccess ?
+    pFullDnsResponsePacket->DnsHeader.ResponseCode = fDnsAnswerFound ?
         DNS_RCODE_NOERROR :
         DNS_RCODE_SERVFAIL;
     pFullDnsResponsePacket->DnsHeader.AnswerCount = htons(
-        fSuccess ? 1 : 0);
+        fDnsAnswerFound ? 1 : 0);
 
     //
     // Construct the DNS_ANSWER_RECORD
     //
-    if (fSuccess)
+    if (fDnsAnswerFound)
     {
         pDnsAnswerRecord =
             (DNS_ANSWER_RECORD*)((BYTE*)pFullDnsResponsePacket +
-            pPacket->cbPacket);
+            cbFullDnsPacket);
 
-        pDnsAnswerRecord->CompressedName = htons(0xC00C); // Name pointer
+        pDnsAnswerRecord->CompressedName = htons(DNS_COMPRESSED_QUESTION_NAME);
         pDnsAnswerRecord->DnsWireRecord.RecordType =
             htons(fTypeAQuery ? DNS_TYPE_A : DNS_TYPE_PTR);
         pDnsAnswerRecord->DnsWireRecord.RecordClass =
@@ -1750,11 +1524,11 @@ sendResponse:
         else
         {
             pDnsAnswerRecord->DnsWireRecord.DataLength =
-                htons((size_t)cbResolvedName + 2);
+                htons((SIZE_T)cbResolvedName + 2);
             cbLabel = 0;
-            pcQName = (char*)pDnsAnswerRecord + sizeof(DNS_ANSWER_RECORD);
-            for (size_t iResolvedName = 0;
-                iResolvedName < ((size_t)cbResolvedName + 1);
+            pcQName = (CHAR*)pDnsAnswerRecord + sizeof(DNS_ANSWER_RECORD);
+            for (SIZE_T iResolvedName = 0;
+                iResolvedName < ((SIZE_T)cbResolvedName + 1);
                 iResolvedName++)
             {
                 c = szResolvedName[iResolvedName];
@@ -1783,26 +1557,26 @@ sendResponse:
     //
     pBuf = pbuf_alloc(
         PBUF_RAW,
-        cbDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr),
+        cbFullDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr),
         PBUF_RAM);
     if (pBuf == NULL)
     {
         Log(
             Red,
             L"Error in HandleDns(): pbuf_alloc(..., %d, ...) failed\n",
-            cbDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
+            cbFullDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
         goto exit;
     }
     memcpy(
         pBuf->payload,
         &pFullDnsResponsePacket->UdpHeader,
-        cbDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
+        cbFullDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
     pFullDnsResponsePacket->UdpHeader.chksum = inet_chksum_pseudo(
         pBuf,
         (ip_addr_t*)&pFullDnsResponsePacket->IpHeader.src,
         (ip_addr_t*)&pFullDnsResponsePacket->IpHeader.dest,
         IP_PROTO_UDP,
-        cbDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
+        cbFullDnsResponsePacket - sizeof(eth_hdr) - sizeof(ip_hdr));
     if (pFullDnsResponsePacket->UdpHeader.chksum == 0)
     {
         pFullDnsResponsePacket->UdpHeader.chksum = 0xFFFF;
@@ -1813,285 +1587,424 @@ sendResponse:
     // Send the DNS response to the virtual machine
     //
     SendPacketToClient(
-        abDnsResponsePacket,
-        cbDnsResponsePacket);
+        (BYTE*)pFullDnsResponsePacket,
+        cbFullDnsResponsePacket);
 
 exit:
-    if (fNameExtracted)
+    if (pFullDnsResponsePacket != NULL)
     {
-        if (fSuccess)
-        {
-            Log(
-                Cyan,
-                L"Resolved DNS query for %S to %S\n",
-                szName,
-                fTypeAQuery ? inet_ntoa(*(in_addr*)&dwResolvedIp) :
-                szResolvedName);
-        }
-        else
-        {
-            Log(
-                Red,
-                L"Failed to resolve DNS query for %S\n",
-                szName);
-        }
+        free(pFullDnsResponsePacket);
     }
-
-    if (abDnsResponsePacket != NULL)
-    {
-        free(abDnsResponsePacket);
-    }
-    if (s != INVALID_SOCKET)
-    {
-        closesocket(s);
-    }
-    free(pParameter);
-
-    return 0;
 }
 
 /*! 
-    @brief Connect to a remote server via Tor
-    @details If the TCP connection is successfully established, ConnectViaTor()
-             adds the connected socket to the list of Available Established
-             Sockets and returns TRUE. If the connection request is actively
-             refused by the remote server (SOCKS response status 0x05),
-             ConnectViaTor() responds to the virtual machine with a TCP RST
-             (without using lwIP) and returns FALSE. If the connection request
-             is passively refused or if another error occurs, ConnectViaTor()
-             simply returns FALSE, effectively dropping the TCP SYN packet. 
+    @brief Inserts an ASYNCHRONOUS_SOCKET_ITEM into the g_pAsynchronousSockets
+           linked-list
 
-    @param[in] pTcp The original TCP SYN packet from the virtual machine
-    @return Returns TRUE if the connection was successfully established,
-            returns FALSE otherwise
+    @param[in] pAsi Pointer to the ASYNCHRONOUS_SOCKET_ITEM to insert into the
+                    g_pAsynchronousSockets linked-list
+    @return Returns TRUE on success, FALSE on failure
 */
 BOOL
-ConnectViaTor (
-    FULL_TCP_PACKET* pTcp
+InsertAsynchronousSocketItemIntoList (
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi
     )
 {
-    SOCKET s;
-    BOOL fSuccess = FALSE;
-    BYTE abSocksTcpRequest[10];
-    BYTE abSocksConnectionResponse[10];
-    INT cbSocksConnectionResponse;
-    FULL_TCP_PACKET tcpReset;
-    pbuf* pBuf;
-
-    //
-    // Connect to and authenticate to the local Tor client
-    //
-    s = ConnectToTorClient();
-    if (s == INVALID_SOCKET)
-    {
-        goto exit;
-    }
-
-    //
-    // Send the connection request to the local Tor client
-    //
-    abSocksTcpRequest[0] = 0x05;                    // SOCKS5
-    abSocksTcpRequest[1] = SOCKS_COMMAND_CONNECT;   // Command
-    abSocksTcpRequest[2] = 0x00;                    // Reserved
-    abSocksTcpRequest[3] = 0x01;                    // Address type: IPv4
-    memcpy(                                         // Destination IP
-        &abSocksTcpRequest[4],
-        &pTcp->IpHeader.dest,
-        sizeof(pTcp->IpHeader.dest));
-    memcpy(                                         // Destination port
-        &abSocksTcpRequest[8],
-        &pTcp->TcpHeader.dest,
-        sizeof(pTcp->TcpHeader.dest));
-    if (SOCKET_ERROR == send(
-        s,
-        (char*)abSocksTcpRequest,
-        _countof(abSocksTcpRequest),
-        0))
+    if (WAIT_OBJECT_0 != WaitForSingleObject(
+        g_hAsiMutex,
+        INFINITE))
     {
         Log(
             Red,
-            L"Error in ConnectViaTor(): send() failed when attempting to send "
-            L"the connection request to the local Tor client\n");
-        goto exit;
+            L"Error in InsertAsynchronousSocketItemIntoList(): Could not "
+            L"acquire mutex (0x%08X)\n",
+            GetLastError());
+        return FALSE;
     }
-
-    //
-    // Get connection response from the local Tor client
-    //
-    cbSocksConnectionResponse = recv(
-        s,
-        (char*)abSocksConnectionResponse,
-        sizeof(abSocksConnectionResponse),
-        0);
-    if (!((cbSocksConnectionResponse == sizeof(abSocksConnectionResponse)) &&
-        (abSocksConnectionResponse[0] == 0x05)))
+    
+    if (g_pAsynchronousSockets == NULL)
     {
-        Log(
-            Red,
-            L"Error in ConnectViaTor(): Unexpected response from the local "
-            L"Tor client\n");
-        goto exit;
+        g_pAsynchronousSockets = pAsi;
     }
-
-    //
-    // Process the connection response from the local Tor client
-    //
-    if (abSocksConnectionResponse[1] == 0x00)
+    else
     {
-        //
-        // The local Tor service was able to connect to the target server, so
-        // add this conncted SOCKS socket to the list of Available Established
-        // Sockets
-        //
-        if (AddAvailableEstablishedSocket(
-            pTcp->IpHeader.dest.addr,
-            pTcp->TcpHeader.dest,
-            s))
+        for (
+            ASYNCHRONOUS_SOCKET_ITEM* p = g_pAsynchronousSockets;
+            ;
+            p = p->pNextItem)
         {
-            fSuccess = TRUE;
+            if (p->pNextItem == NULL)
+            {
+                p->pNextItem = pAsi;
+                break;
+            }
+        }
+    }
+
+    ReleaseMutex(g_hAsiMutex);
+
+    return TRUE;
+}
+
+/*! 
+    @brief Updates an ASYNCHRONOUS_SOCKET_ITEM in the g_pAsynchronousSockets
+           linked-list
+
+    @param[in] pAsi Pointer to the ASYNCHRONOUS_SOCKET_ITEM to update
+    @return Returns TRUE on success, FALSE on failure
+*/
+BOOL
+UpdateAsynchronousSocketItemInList (
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi
+    )
+{
+    BOOL fSuccess = FALSE;
+    BOOL fMutexHeld = FALSE;
+
+    if (WAIT_OBJECT_0 != WaitForSingleObject(
+        g_hAsiMutex,
+        INFINITE))
+    {
+        Log(
+            Red,
+            L"Error in UpdateAsynchronousSocketItemInList(): Could not "
+            L"acquire mutex (0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+    fMutexHeld = TRUE;
+    
+    for (
+        ASYNCHRONOUS_SOCKET_ITEM* p = g_pAsynchronousSockets;
+        p != NULL;
+        p = p->pNextItem)
+    {
+        if (p != pAsi)
+        {
+            continue;
         }
 
-        Log(
-            Green,
-            L"Connected to %S:%d (socket #%d)\n",
-            inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
-            ntohs(pTcp->TcpHeader.dest),
-            s);
-
-        goto exit;
+        memcpy(
+            p,
+            pAsi,
+            sizeof(ASYNCHRONOUS_SOCKET_ITEM) - sizeof(pAsi->pNextItem));
+        fSuccess = TRUE;
+        break;
     }
-    else if (abSocksConnectionResponse[1] != 0x05)
-    {
-        //
-        // The SOCKS client informed us that there was a passive connection
-        // failure
-        //
-
-        Log(
-            Red,
-            L"Could not connect to %S:%d\n",
-            inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
-            ntohs(pTcp->TcpHeader.dest));
-
-        goto exit;
-    }
-
-    //
-    // The remote server actively refused the connection attempt, so respond to
-    // the virtual machine with a TCP SYN packet
-    //
-
-    Log(
-        Red,
-        L"Connection request refused by %S:%d\n",
-        inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
-        ntohs(pTcp->TcpHeader.dest));
-
-    //
-    // Set the Ethernet header
-    //
-    memcpy(
-        &tcpReset.EthernetHeader.dest,
-        &pTcp->EthernetHeader.src,
-        sizeof(tcpReset.EthernetHeader.dest));
-    memcpy(
-        &tcpReset.EthernetHeader.src,
-        &pTcp->EthernetHeader.dest,
-        sizeof(tcpReset.EthernetHeader.dest));
-    tcpReset.EthernetHeader.type = pTcp->EthernetHeader.type;
-
-    //
-    // Set the IP header
-    //
-    tcpReset.IpHeader._v_hl = 0x45;
-    tcpReset.IpHeader._tos = 0;
-    tcpReset.IpHeader._len = htons(
-        sizeof(tcpReset) - sizeof(tcpReset.EthernetHeader));
-    tcpReset.IpHeader._id = 0;
-    tcpReset.IpHeader._offset = 0;
-    tcpReset.IpHeader._ttl = 64;
-    tcpReset.IpHeader._proto = IPPROTO_TCP;
-    tcpReset.IpHeader.src = pTcp->IpHeader.dest;
-    tcpReset.IpHeader.dest = pTcp->IpHeader.src;
-    tcpReset.IpHeader._chksum = 0;
-    tcpReset.IpHeader._chksum = inet_chksum(
-        &tcpReset.IpHeader,
-        sizeof(tcpReset.IpHeader));
-            
-    //
-    // Set the TCP header
-    //
-    tcpReset.TcpHeader.src = pTcp->TcpHeader.dest;
-    tcpReset.TcpHeader.dest = pTcp->TcpHeader.src;
-    tcpReset.TcpHeader.seqno = 0;
-    tcpReset.TcpHeader.ackno = htonl(
-        ntohl(pTcp->TcpHeader.seqno) + 1);
-    TCPH_HDRLEN_SET(&tcpReset.TcpHeader, 5);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_CWR);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_ECE);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_URG);
-    TCPH_SET_FLAG(&tcpReset.TcpHeader, TCP_ACK);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_PSH);
-    TCPH_SET_FLAG(&tcpReset.TcpHeader, TCP_RST);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_SYN);
-    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_FIN);
-    tcpReset.TcpHeader.wnd = 0;
-    tcpReset.TcpHeader.urgp = 0;
-    tcpReset.TcpHeader.chksum = 0;
-
-    //
-    // Set the TCP checksum
-    //
-    pBuf = pbuf_alloc(
-        PBUF_RAW,
-        sizeof(tcpReset),
-        PBUF_RAM);
-    if (pBuf == NULL)
-    {
-        Log(
-            Red,
-            L"Error in ConnectViaTor(): pbuf_alloc() failed\n");
-        goto exit;
-    }
-    memcpy(
-        pBuf->payload,
-        &tcpReset,
-        sizeof(tcpReset));
-    tcpReset.TcpHeader.chksum = inet_chksum_pseudo(
-        pBuf,
-        (ip_addr_t*)&tcpReset.IpHeader.src,
-        (ip_addr_t*)&tcpReset.IpHeader.dest,
-        IP_PROTO_TCP,
-        pBuf->tot_len);
-    pbuf_free(pBuf);
-
-    //
-    // Send the TCP RST packet to the virtual machine
-    //
-    SendPacketToClient(
-        (BYTE*)&tcpReset,
-        sizeof(tcpReset));
-
+    
 exit:
-    if ((s != INVALID_SOCKET) && (!fSuccess))
+    if (fMutexHeld)
     {
-        closesocket(s);
+        ReleaseMutex(g_hAsiMutex);
     }
 
     return fSuccess;
 }
 
 /*! 
-    @brief Handle a TCP packet received from the virtual machine
+    @brief Removes an ASYNCHRONOUS_SOCKET_ITEM from the g_pAsynchronousSockets
+           linked-list and optionally closes that item's socket
 
-    @param[in] pParameter Pointer to a PACKET_WITH_SIZE struct
-    @return Always returns 0
+    @param[in] s SOCKET for the ASYNCHRONOUS_SOCKET_ITEM to be removed
+    @param[in] fCloseSocket Specifies if the caller wants
+                            UpdateAsynchronousSocketItemInList() to close the
+                            socket
+    @return Returns TRUE on success, FALSE on failure
+*/
+BOOL
+RemoveAsynchronousSocketItemFromList (
+    SOCKET s,
+    BOOL fCloseSocket
+    )
+{
+    BOOL fSuccess = FALSE;
+    BOOL fMutexHeld = FALSE;
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi;
+
+    if (WAIT_OBJECT_0 != WaitForSingleObject(
+        g_hAsiMutex,
+        INFINITE))
+    {
+        Log(
+            Red,
+            L"Error in RemoveAsynchronousSocketItemFromList(): Could not "
+            L"acquire mutex (0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+    fMutexHeld = TRUE;
+    
+    if (g_pAsynchronousSockets == NULL)
+    {
+        goto exit;
+    }
+
+    if (g_pAsynchronousSockets->s == s)
+    {
+        if (fCloseSocket)
+        {
+            closesocket(s);
+        }
+        free(g_pAsynchronousSockets->abPacket);
+
+        pAsi = g_pAsynchronousSockets->pNextItem;
+        free(g_pAsynchronousSockets);
+        g_pAsynchronousSockets = pAsi;
+
+        fSuccess = TRUE;
+        goto exit;
+    }
+
+    for (
+        ASYNCHRONOUS_SOCKET_ITEM* p = g_pAsynchronousSockets;
+        ;
+        p = p->pNextItem)
+    {
+        if (p->pNextItem == NULL)
+        {
+            goto exit;
+        }
+
+        if (p->pNextItem->s != s)
+        {
+            continue;
+        }
+
+        if (fCloseSocket)
+        {
+            closesocket(s);
+        }
+        free(p->pNextItem->abPacket);
+
+        pAsi = p->pNextItem->pNextItem;
+        free(p->pNextItem);
+        p->pNextItem = pAsi;
+
+        fSuccess = TRUE;
+        goto exit;
+    }
+    
+exit:
+    if (fMutexHeld)
+    {
+        ReleaseMutex(g_hAsiMutex);
+    }
+
+    return fSuccess;
+}
+
+
+/*! 
+    @brief Handles a DNS query or TCP SYN packet from the virtual machine
+
+    @param[in] fDns If TRUE, the packet is a DNS packet; if FALSE, the packet
+                    is a TCP SYN packet
+    @param[in] abPacket Pointer to the original packet data received from the
+                        virtual machine
+    @param[in] cbPacket Length of the original packet
 */
 VOID
-__stdcall
+HandleDnsOrTcpSyn (
+    BOOL fDns,
+    BYTE* abPacket,
+    SIZE_T cbPacket
+    )
+{
+    BOOL fSuccess = FALSE;
+    BOOL fNameExtracted = FALSE;
+    BOOL fTypeAQuery;
+    CHAR szName[DNS_MAX_NAME_BUFFER_LENGTH];
+    SOCKET s = INVALID_SOCKET;
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi = NULL;
+    sockaddr_in sin;
+    BOOL fInserted = FALSE;
+
+    if (fDns)
+    {
+        //
+        // Extract the hostname or IP address from the DNS query
+        //
+        if (!ExtractNameFromDnsQuery(
+            abPacket,
+            cbPacket,
+            szName,
+            _countof(szName),
+            &fTypeAQuery))
+        {
+            goto exit;
+        }
+
+        fNameExtracted = TRUE;
+    }
+
+    //
+    // Create a new socket
+    //
+    s = socket(
+        AF_INET,
+        SOCK_STREAM,
+        IPPROTO_TCP);
+    if (s == INVALID_SOCKET)
+    {
+        Log(
+            Red,
+            L"Error in HandleDnsOrTcpSyn(): Could not create a new socket "
+            L"object (0x%08X)\n",
+            WSAGetLastError());
+        goto exit;
+    }
+
+    //
+    // Set the new socket to be asynchronous
+    //
+    if (0 != WSAAsyncSelect(
+        s,
+        g_hwndAsynchronousSocketEngine,
+        WM_USER,
+        FD_READ | FD_WRITE | FD_CONNECT | FD_CLOSE))
+    {
+        Log(
+            Red,
+            L"Error in HandleDnsOrTcpSyn(): WSAAsyncSelect() failed "
+            L"(0x%08X)\n",
+            WSAGetLastError());
+        goto exit;
+    }
+
+    //
+    // Construct an ASYNCHRONOUS_SOCKET_ITEM structure and insert it into the
+    // g_pAsynchronousSockets list
+    //
+    pAsi = (ASYNCHRONOUS_SOCKET_ITEM*)malloc(sizeof(ASYNCHRONOUS_SOCKET_ITEM));
+    if (pAsi == NULL)
+    {
+        Log(
+            Red,
+            L"Error in HandleDnsOrTcpSyn(): malloc(%d) failed\n",
+            sizeof(ASYNCHRONOUS_SOCKET_ITEM));
+        goto exit;
+    }
+    pAsi->s = s;
+    pAsi->state = ConnectingToTorClient;
+    pAsi->fDnsQuery = fDns;
+    if (fDns)
+    {
+        pAsi->fTypeAQuery = fTypeAQuery;
+        strcpy_s(
+            pAsi->szQueriedNameOrIp,
+            _countof(pAsi->szQueriedNameOrIp),
+            szName);
+    }
+    pAsi->abPacket = (BYTE*)malloc(cbPacket);
+    if (pAsi->abPacket == NULL)
+    {
+        Log(
+            Red,
+            L"Error in HandleDnsOrTcpSyn(): malloc(%d) failed\n",
+            cbPacket);
+        goto exit;
+    }
+    memcpy(
+        pAsi->abPacket,
+        abPacket,
+        cbPacket);
+    pAsi->cbPacket = cbPacket;
+    pAsi->pNextItem = NULL;
+    if (!InsertAsynchronousSocketItemIntoList(pAsi))
+    {
+        goto exit;
+    }
+    fInserted = TRUE;
+
+    //
+    // Connect to the local Tor client
+    //
+    sin.sin_family = AF_INET;
+    sin.sin_addr.S_un.S_addr = g_dwTorClientIpAddress;
+    sin.sin_port = htons(g_wTorClientTcpPort);
+    memset(
+        &sin.sin_zero,
+        0,
+        sizeof(sin.sin_zero));
+    if (!((SOCKET_ERROR == connect(
+        s,
+        (sockaddr*)&sin,
+        sizeof(sin))) &&
+        (WSAGetLastError() == WSAEWOULDBLOCK)))
+    {
+        Log(
+            Red,
+            L"Error in HandleDnsOrTcpSyn(): connect() failed (0x%08X)\n",
+            WSAGetLastError());
+        goto exit;
+    }
+
+    fSuccess = TRUE;
+
+exit:
+    if (fSuccess)
+    {
+        return;
+    }
+
+    if (fDns)
+    {
+        if (fNameExtracted)
+        {
+            Log(
+                Red,
+                L"Failed to resolve DNS query for %S\n",
+                szName);
+        }
+
+        //
+        // Send a DNS_RCODE_SERVFAIL response to the virtual machine
+        //
+        SendDnsResponse(
+            (FULL_DNS_PACKET*)abPacket,
+            cbPacket,
+            FALSE,
+            fTypeAQuery,
+            0,
+            NULL,
+            0);
+    }
+
+    if (fInserted)
+    {
+        RemoveAsynchronousSocketItemFromList(
+            s,
+            TRUE);
+    }
+    else
+    {
+        if (s != INVALID_SOCKET)
+        {
+            closesocket(s);
+        }
+
+        if (pAsi != NULL)
+        {
+            if (pAsi->abPacket != NULL)
+            {
+                free(pAsi->abPacket);
+            }
+            free(pAsi);
+        }
+    }
+}
+
+/*! 
+    @brief Handle a TCP packet received from the virtual machine
+
+    @param[in] abPacket Pointer to the original packet data received from the
+                        virtual machine
+    @param[in] cbPacket Length of the original packet
+*/
+VOID
 HandleTcp (
-    BYTE* Packet,
-	DWORD PacketLength
+    BYTE* abPacket,
+	SIZE_T cbPacket
     )
 {
     pbuf* pBuf;
@@ -2099,21 +2012,25 @@ HandleTcp (
     //
     // Send the TCP packet to the lwIP TCP/IP stack
     //
+
     pBuf = pbuf_alloc(
         PBUF_RAW,
-		PacketLength,
+		cbPacket,
         PBUF_RAM);
     if (pBuf == NULL)
     {
         Log(
             Red,
-            L"Error in HandleTcp(): pbuf_alloc() failed\n");
-        goto exit;
+            L"Error in HandleTcp(): pbuf_alloc(..., %d, ...) failed\n",
+            cbPacket);
+        return;
     }
+
     memcpy(
         pBuf->payload,
-        Packet,
-        PacketLength);
+        abPacket,
+        cbPacket);
+
     if (ERR_OK != tcpip_input(
         pBuf,
         &netif))
@@ -2124,31 +2041,7 @@ HandleTcp (
 
         pbuf_free(
             pBuf);
-
-        goto exit;
     }
-
-exit:
-	return;
-}
-
-UINT
-__stdcall
-HandleTcpSyn(
-	PVOID Parameter
-	)
-{
-	PACKET_WITH_SIZE *packet = (PACKET_WITH_SIZE*)Parameter;
-	FULL_TCP_PACKET *pTcp = (FULL_TCP_PACKET*) packet->abPacket;
-
-	if (ConnectViaTor(pTcp))
-	{
-		HandleTcp(packet->abPacket, packet->cbPacket);
-	}
-    
-    free(Parameter);
-
-	return 0;
 }
 
 /*! 
@@ -3778,6 +3671,1081 @@ exit:
 }
 
 /*! 
+    @brief Connects to a remote server through the local Tor client; called
+           after authentication to local Tor client
+
+    @param[in] pAsi The ASYNCHRONOUS_SOCKET_ITEM to handle
+    @param[in] wSelectEvent The network event about which we're being notified
+    @param[in] wSelectError The error value (if any) associated with the
+                            network event
+*/
+VOID
+ProcessAsynchronousTcpEvent (
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi,
+    WORD wSelectEvent,
+    WORD wSelectError
+    )
+{
+    BOOL fSuccess = FALSE;
+    BYTE abSocksTcpRequest[10];
+    FULL_TCP_PACKET* pTcp = (FULL_TCP_PACKET*)pAsi->abPacket;
+    BYTE abSocksConnectionResponse[10];
+    INT cbSocksConnectionResponse;
+    FULL_TCP_PACKET tcpReset;
+    pbuf* pBuf;
+    ULONG ulZero;
+
+
+    if (pAsi->state == Authenticated)
+    {
+        //
+        // This is the state after we've authenticated to the local Tor client
+        //
+
+        if (wSelectEvent == FD_CLOSE)
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousTcpEvent(): The connection to "
+                L"the local Tor client was unexpectedly closed in state "
+                L"Authenticated (%d, 0x%04X, 0x%04X)\n",
+                pAsi->s,
+                wSelectEvent,
+                wSelectError);
+            goto exit;
+        }
+
+        if (wSelectError != 0)
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousTcpEvent(): Unexpected socket "
+                L"event received in state Authenticated (%d, 0x%04X, "
+                L"0x%04X)\n",
+                pAsi->s,
+                wSelectEvent,
+                wSelectError);
+            goto exit;
+        }
+
+        //
+        // Send the connection request to the local Tor client
+        //
+        abSocksTcpRequest[0] = 0x05;                    // SOCKS5
+        abSocksTcpRequest[1] = SOCKS_COMMAND_CONNECT;   // Command
+        abSocksTcpRequest[2] = 0x00;                    // Reserved
+        abSocksTcpRequest[3] = 0x01;                    // Address type: IPv4
+        memcpy(                                         // Destination IP
+            &abSocksTcpRequest[4],
+            &pTcp->IpHeader.dest,
+            sizeof(pTcp->IpHeader.dest));
+        memcpy(                                         // Destination port
+            &abSocksTcpRequest[8],
+            &pTcp->TcpHeader.dest,
+            sizeof(pTcp->TcpHeader.dest));
+        if (SOCKET_ERROR == send(
+            pAsi->s,
+            (char*)abSocksTcpRequest,
+            _countof(abSocksTcpRequest),
+            0))
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousTcpEvent(): send() failed when "
+                L"attempting to send the connection request to the local Tor "
+                L"client (%d, 0x%08X)\n",
+                pAsi->s,
+                WSAGetLastError());
+            goto exit;
+        }
+
+        pAsi->state = TcpConnectionRequestSent;
+        fSuccess = UpdateAsynchronousSocketItemInList(
+            pAsi);
+
+        goto exit;
+    }
+    else if (pAsi->state != TcpConnectionRequestSent)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousTcpEvent(): Unexpected state "
+            L"(%d, 0x%08X)\n",
+            pAsi->s,
+            pAsi->state);
+        goto exit;
+    }
+
+    //
+    // This is the state after we've just sent the TCP connection request to
+    // the local Tor client
+    //
+
+    if (wSelectEvent == FD_CLOSE)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousTcpEvent(): The connection to the "
+            L"local Tor client was unexpectedly closed in state "
+            L"TcpConnectionRequestSent (%d, 0x%04X, 0x%04X)\n",
+            pAsi->s,
+            wSelectEvent,
+            wSelectError);
+        goto exit;
+    }
+            
+    if ((wSelectEvent == FD_WRITE) && (wSelectError == 0))
+    {
+        fSuccess = TRUE;
+        goto exit;
+    }
+
+    if (!((wSelectEvent == FD_READ) && (wSelectError == 0)))
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousTcpEvent(): Unexpected socket event "
+            L"received in TcpConnectionRequestSent state (%d, 0x%04X, "
+            L"0x%04X)\n",
+            pAsi->s,
+            wSelectEvent,
+            wSelectError);
+        goto exit;
+    }
+
+    //
+    // Get the TCP connection response from the local Tor client
+    //
+    cbSocksConnectionResponse = recv(
+        pAsi->s,
+        (char*)abSocksConnectionResponse,
+        sizeof(abSocksConnectionResponse),
+        0);
+    if (!((cbSocksConnectionResponse == sizeof(abSocksConnectionResponse)) &&
+        (abSocksConnectionResponse[0] == 0x05)))
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousTcpEvent(): Unexpected response "
+            L"from the local Tor client (%d, 0x%08X)\n",
+            pAsi->s,
+            WSAGetLastError());
+        goto exit;
+    }
+
+    //
+    // Process the connection response from the local Tor client
+    //
+    if (abSocksConnectionResponse[1] == 0x00)
+    {
+        //
+        // The local Tor service was able to connect to the target server, so
+        // set the socket mode back to blocking
+        //
+        if (0 != WSAAsyncSelect(
+            pAsi->s,
+            g_hwndAsynchronousSocketEngine,
+            WM_USER,
+            0))
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousTcpEvent(): WSAAsyncSelect() "
+                L"failed when trying to set socket #%d back to blocking mode "
+                L"(0x%08X)\n",
+                pAsi->s,
+                WSAGetLastError());
+            goto exit;
+        }
+        ulZero = 0;
+        if (0 != ioctlsocket(
+            pAsi->s,
+            FIONBIO,
+            &ulZero))
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousTcpEvent(): ioctlsocket() "
+                L"failed when trying to set socket #%d back to blocking mode "
+                L"(0x%08X)\n",
+                pAsi->s,
+                WSAGetLastError());
+            goto exit;
+        }
+
+        //
+        // Add this conncted SOCKS socket to the list of Available Established
+        // Sockets
+        //
+        fSuccess = AddAvailableEstablishedSocket(
+            pTcp->IpHeader.dest.addr,
+            pTcp->TcpHeader.dest,
+            pAsi->s);
+        if (!fSuccess)
+        {
+            goto exit;
+        }
+
+        Log(
+            Green,
+            L"Connected to %S:%d (socket #%d)\n",
+            inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
+            ntohs(pTcp->TcpHeader.dest),
+            pAsi->s);
+
+        HandleTcp(
+            pAsi->abPacket,
+            pAsi->cbPacket);
+
+        RemoveAsynchronousSocketItemFromList(
+            pAsi->s,
+            FALSE);
+
+        goto exit;
+    }
+    else if (abSocksConnectionResponse[1] != 0x05)
+    {
+        //
+        // The SOCKS client informed us that there was a passive connection
+        // failure
+        //
+
+        Log(
+            Red,
+            L"Could not connect to %S:%d (socket #%d)\n",
+            inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
+            ntohs(pTcp->TcpHeader.dest),
+            pAsi->s);
+
+        goto exit;
+    }
+
+    //
+    // The remote server actively refused the connection attempt, so respond to
+    // the virtual machine with a TCP SYN packet
+    //
+
+    Log(
+        Red,
+        L"Connection request refused by %S:%d (socket #%d)\n",
+        inet_ntoa(*(in_addr*)&pTcp->IpHeader.dest),
+        ntohs(pTcp->TcpHeader.dest),
+        pAsi->s);
+
+    //
+    // Set the Ethernet header
+    //
+    memcpy(
+        &tcpReset.EthernetHeader.dest,
+        &pTcp->EthernetHeader.src,
+        sizeof(tcpReset.EthernetHeader.dest));
+    memcpy(
+        &tcpReset.EthernetHeader.src,
+        &pTcp->EthernetHeader.dest,
+        sizeof(tcpReset.EthernetHeader.dest));
+    tcpReset.EthernetHeader.type = pTcp->EthernetHeader.type;
+
+    //
+    // Set the IP header
+    //
+    tcpReset.IpHeader._v_hl = 0x45;
+    tcpReset.IpHeader._tos = 0;
+    tcpReset.IpHeader._len = htons(
+        sizeof(tcpReset) - sizeof(tcpReset.EthernetHeader));
+    tcpReset.IpHeader._id = 0;
+    tcpReset.IpHeader._offset = 0;
+    tcpReset.IpHeader._ttl = 64;
+    tcpReset.IpHeader._proto = IPPROTO_TCP;
+    tcpReset.IpHeader.src = pTcp->IpHeader.dest;
+    tcpReset.IpHeader.dest = pTcp->IpHeader.src;
+    tcpReset.IpHeader._chksum = 0;
+    tcpReset.IpHeader._chksum = inet_chksum(
+        &tcpReset.IpHeader,
+        sizeof(tcpReset.IpHeader));
+            
+    //
+    // Set the TCP header
+    //
+    tcpReset.TcpHeader.src = pTcp->TcpHeader.dest;
+    tcpReset.TcpHeader.dest = pTcp->TcpHeader.src;
+    tcpReset.TcpHeader.seqno = 0;
+    tcpReset.TcpHeader.ackno = htonl(
+        ntohl(pTcp->TcpHeader.seqno) + 1);
+    TCPH_HDRLEN_SET(&tcpReset.TcpHeader, 5);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_CWR);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_ECE);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_URG);
+    TCPH_SET_FLAG(&tcpReset.TcpHeader, TCP_ACK);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_PSH);
+    TCPH_SET_FLAG(&tcpReset.TcpHeader, TCP_RST);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_SYN);
+    TCPH_UNSET_FLAG(&tcpReset.TcpHeader, TCP_FIN);
+    tcpReset.TcpHeader.wnd = 0;
+    tcpReset.TcpHeader.urgp = 0;
+    tcpReset.TcpHeader.chksum = 0;
+
+    //
+    // Set the TCP checksum
+    //
+    pBuf = pbuf_alloc(
+        PBUF_RAW,
+        sizeof(tcpReset),
+        PBUF_RAM);
+    if (pBuf == NULL)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousTcpEvent(): "
+            L"pbuf_alloc(..., %d, ...) failed\n",
+            sizeof(tcpReset));
+        goto exit;
+    }
+    memcpy(
+        pBuf->payload,
+        &tcpReset,
+        sizeof(tcpReset));
+    tcpReset.TcpHeader.chksum = inet_chksum_pseudo(
+        pBuf,
+        (ip_addr_t*)&tcpReset.IpHeader.src,
+        (ip_addr_t*)&tcpReset.IpHeader.dest,
+        IP_PROTO_TCP,
+        pBuf->tot_len);
+    pbuf_free(pBuf);
+
+    //
+    // Send the TCP RST packet to the virtual machine
+    //
+    SendPacketToClient(
+        (BYTE*)&tcpReset,
+        sizeof(tcpReset));
+
+exit:
+    if (!fSuccess)
+    {
+        RemoveAsynchronousSocketItemFromList(
+            pAsi->s,
+            TRUE);
+    }
+}
+
+/*! 
+    @brief Performs a DNS lookup through the local Tor client; called
+           after authentication to local Tor client
+
+    @param[in] pAsi The ASYNCHRONOUS_SOCKET_ITEM to handle
+    @param[in] wSelectEvent The network event about which we're being notified
+    @param[in] wSelectError The error value (if any) associated with the
+                            network event
+*/
+VOID
+ProcessAsynchronousDnsEvent (
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi,
+    WORD wSelectEvent,
+    WORD wSelectError
+    )
+{
+    BOOL fSuccess = FALSE;
+    BYTE abSocksDnsRequest[DNS_MAX_NAME_LENGTH + 7];
+    SIZE_T cchNameLength;
+    DWORD dwIp;
+    INT cbSocksDnsResponse;
+    CHAR acSocksDnsResponse[DNS_MAX_NAME_LENGTH + 7];
+    BYTE cbResolvedName;
+    CHAR szResolvedName[DNS_MAX_NAME_BUFFER_LENGTH];
+    DWORD dwResolvedIp;
+
+    if (pAsi->state == Authenticated)
+    {
+        //
+        // This is the state after we've authenticated to the local Tor client
+        //
+
+        if (wSelectEvent == FD_CLOSE)
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousDnsEvent(): The connection to "
+                L"the local Tor client was unexpectedly closed in state "
+                L"Authenticated (%d, 0x%04X, 0x%04X)\n",
+                pAsi->s,
+                wSelectEvent,
+                wSelectError);
+            goto exit;
+        }
+
+        if (wSelectError != 0)
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousDnsEvent(): Unexpected socket "
+                L"event received in state Authenticated "
+                L"(%d, 0x%04X, 0x%04X)\n",
+                pAsi->s,
+                wSelectEvent,
+                wSelectError);
+            goto exit;
+        }
+
+        //
+        // Send the DNS request to the local Tor client
+        //
+
+        abSocksDnsRequest[0] = 0x05;                    // SOCKS5
+        if (pAsi->fTypeAQuery)
+        {
+            cchNameLength = strlen(pAsi->szQueriedNameOrIp);
+            abSocksDnsRequest[1] =
+                (BYTE)SOCKS_COMMAND_RESOLVE;            // Command
+            abSocksDnsRequest[2] = 0x00;                // Reserved
+            abSocksDnsRequest[3] = 0x03;                // Address type: FQDN
+            abSocksDnsRequest[4] = cchNameLength;       // FQDN length
+            memcpy(                                     // FQDN
+                &abSocksDnsRequest[5],
+                pAsi->szQueriedNameOrIp,
+                cchNameLength);
+            abSocksDnsRequest[5 + cchNameLength] = 0x00;    // Port
+            abSocksDnsRequest[6 + cchNameLength] = 0x00;    // Port
+        }
+        else
+        {
+            abSocksDnsRequest[1] =
+                (BYTE)SOCKS_COMMAND_RESOLVE_PTR;        // Command
+            abSocksDnsRequest[2] = 0x00;                // Reserved
+            abSocksDnsRequest[3] = 0x01;                // Address type: IPv4
+            dwIp = inet_addr(pAsi->szQueriedNameOrIp);
+            memcpy(                                     // IP
+                &abSocksDnsRequest[4],
+                &dwIp,
+                sizeof(dwIp));
+            abSocksDnsRequest[8] = 0x00;                // Port
+            abSocksDnsRequest[9] = 0x00;                // Port
+        }
+            
+        if (SOCKET_ERROR == send(
+            pAsi->s,
+            (CHAR*)abSocksDnsRequest,
+            pAsi->fTypeAQuery ? (7 + cchNameLength) : 10,
+            0))
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousDnsEvent(): Could not send DNS "
+                L"request to local Tor client (%d, 0x%08X)\n",
+                pAsi->s,
+                WSAGetLastError());
+            goto exit;
+        }
+
+        pAsi->state = DnsRequestSent;
+        fSuccess = UpdateAsynchronousSocketItemInList(
+            pAsi);
+
+        goto exit;
+    }
+    else if (pAsi->state != DnsRequestSent)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousDnsEvent(): Unexpected state "
+            L"(%d, 0x%08X)\n",
+            pAsi->s,
+            pAsi->state);
+        goto exit;
+    }
+
+    //
+    // This is the state after we've just sent the DNS request to the local Tor
+    // client
+    //
+
+    if (wSelectEvent == FD_CLOSE)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousDnsEvent(): The connection to the"
+            L"local Tor client was unexpectedly closed in state "
+            L"DnsRequestSent (%d, 0x%04X, 0x%04X)\n",
+            pAsi->s,
+            wSelectEvent,
+            wSelectError);
+        goto exit;
+    }
+            
+    if ((wSelectEvent == FD_WRITE) && (wSelectError == 0))
+    {
+        fSuccess = TRUE;
+        goto exit;
+    }
+
+    if (!((wSelectEvent == FD_READ) && (wSelectError == 0)))
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousDnsEvent(): Unexpected socket event "
+            L"received in DnsRequestSent state (%d, 0x%04X, 0x%04X)\n",
+            pAsi->s,
+            wSelectEvent,
+            wSelectError);
+        goto exit;
+    }
+
+    //
+    // Get the DNS response from the local Tor client
+    //
+    cbSocksDnsResponse = recv(
+        pAsi->s,
+        acSocksDnsResponse,
+        sizeof(acSocksDnsResponse),
+        0);
+    if (cbSocksDnsResponse == SOCKET_ERROR)
+    {
+        Log(
+            Red,
+            L"Error in ProcessAsynchronousDnsEvent(): Could not receive DNS "
+            L"response from local Tor client (%d, 0x%08X)\n",
+            pAsi->s,
+            WSAGetLastError());
+        goto exit;
+    }
+
+    if (pAsi->fTypeAQuery)
+    {
+        //
+        // Query was a hostname, so validate that response is an IP address
+        //
+        if (!((cbSocksDnsResponse == 10) &&
+            (acSocksDnsResponse[0] == 0x05) &&  // SOCKS5
+            (acSocksDnsResponse[1] == 0x00) &&  // SOCKS5_SUCCEEDED
+            (acSocksDnsResponse[3] == 0x01)))   // IPv4 address
+        {
+            goto exit;
+        }
+
+        //
+        // Save the response IP address
+        //
+        memcpy(
+            &dwResolvedIp,
+            &acSocksDnsResponse[4],
+            sizeof(dwResolvedIp));
+    }
+    else 
+    {
+        //
+        // Query was an IP address, so validate that response is a hostname
+        //
+        if (!((cbSocksDnsResponse >= 7) &&
+            (acSocksDnsResponse[0] == 0x05) &&  // SOCKS5
+            (acSocksDnsResponse[1] == 0x00) &&  // SOCKS5_SUCCEEDED
+            (acSocksDnsResponse[3] == 0x03)))   // Domain name
+        {
+            goto exit;
+        }
+
+        //
+        // Validate the length of the resolved hostname
+        //
+        cbResolvedName = acSocksDnsResponse[4];
+        if ((cbResolvedName == 0) ||
+            (cbSocksDnsResponse != ((size_t)cbResolvedName + 7)))
+        {
+            Log(
+                Red,
+                L"Error in ProcessAsynchronousDnsEvent(): DNS_TYPE_PTR lookup "
+                L"returned hostname with invalid length\n");
+            goto exit;
+        }
+        
+        //
+        // Save the response hostname and NULL-terminate it
+        //
+        memcpy(
+            szResolvedName,
+            &acSocksDnsResponse[5],
+            cbResolvedName);
+        szResolvedName[cbResolvedName] = 0;
+    }
+
+    fSuccess = TRUE;
+
+    Log(
+        Cyan,
+        L"Resolved DNS query for %S to %S\n",
+        pAsi->szQueriedNameOrIp,
+        pAsi->fTypeAQuery ? inet_ntoa(*(in_addr*)&dwResolvedIp) :
+        szResolvedName);
+    
+    SendDnsResponse(
+        (FULL_DNS_PACKET*)pAsi->abPacket,
+        pAsi->cbPacket,
+        TRUE,
+        pAsi->fTypeAQuery,
+        dwResolvedIp,
+        szResolvedName,
+        cbResolvedName);
+
+    RemoveAsynchronousSocketItemFromList(
+        pAsi->s,
+        TRUE);
+
+exit:
+    if (!fSuccess)
+    {
+        Log(
+            Red,
+            L"Failed to resolve DNS query for %S\n",
+            pAsi->szQueriedNameOrIp);
+
+        //
+        // Send a DNS_RCODE_SERVFAIL response to the virtual machine
+        //
+        SendDnsResponse(
+            (FULL_DNS_PACKET*)pAsi->abPacket,
+            pAsi->cbPacket,
+            FALSE,
+            pAsi->fTypeAQuery,
+            0,
+            NULL,
+            0);
+
+        RemoveAsynchronousSocketItemFromList(
+            pAsi->s,
+            TRUE);
+    }
+}
+
+/*! 
+    @brief A WNDPROC callback that receives notifications of asynchronous
+           socket events; acts as a state machine per socket to connect to and
+           authenticate to the local Tor client, then call the appropriate TCP
+           and DNS handling functions
+    
+    @param[in] hwnd Handle to the g_hwndAsynchronousSocketEngine window
+    @param[in] uMsg Window message; if WM_USER then this is a socket event
+    @param[in] wParam If uMsg == WM_USER, this is the socket for the received
+                      event
+    @param[in] lParam If uMsg == WM_USER, this value contains the network event
+                      and error values which can be extracted via
+                      WSAGETSELECTEVENT() and WSAGETSELECTERROR()
+    @return Returns 0 if uMsg == WM_USER, otherwise returns return value of
+            DefWindowProc()
+*/
+LRESULT
+__stdcall
+AsynchronousSocketEngine (
+    HWND hwnd,
+    UINT uMsg,
+    WPARAM wParam,
+    LPARAM lParam
+    )
+{
+    SOCKET s;
+    WORD wSelectEvent;
+    WORD wSelectError;
+    ASYNCHRONOUS_SOCKET_ITEM* pAsi = NULL;
+    BOOL fSuccess = TRUE;
+
+    //
+    // All WSAAsyncSelect events will have a uMsg value of WM_USER. Call
+    // DefWindowProc() on all other window messages (window creation, etc.).
+    //
+    if (uMsg != WM_USER)
+    {
+        return DefWindowProc(
+            hwnd,
+            uMsg,
+            wParam,
+            lParam);
+    }
+
+    //
+    // Extract the socket, WSAAsyncSelect event, and WSAAsyncSelect error (if
+    // any) from the AsynchronousTcpSynEngine() function arguments
+    //
+    s = wParam;
+    wSelectEvent = WSAGETSELECTEVENT(lParam);
+    wSelectError = WSAGETSELECTERROR(lParam);
+
+    //
+    // Acquire the g_hAsiMutex mutex
+    //
+    if (WAIT_OBJECT_0 != WaitForSingleObject(
+        g_hAsiMutex,
+        INFINITE))
+    {
+        Log(
+            Red,
+            L"Error in AsynchronousSocketEngine(): Could not acquire mutex "
+            L"(0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+
+    //
+    // Find the ASYNCHRONOUS_SOCKET_ITEM for this socket in the
+    // g_pAsynchronousSockets list
+    //
+    for (pAsi = g_pAsynchronousSockets;
+        pAsi != NULL;
+        pAsi = pAsi->pNextItem)
+    {
+        if (pAsi->s == s)
+        {
+            break;
+        }
+    }
+
+    ReleaseMutex(g_hAsiMutex);
+
+    if (pAsi == NULL)
+    {
+        //
+        // It may be the case that we're still receiving notifications from the
+        // application message queue backlog after we've removed the socket
+        // from the g_pAsynchronousSockets list. This is not a problem or a
+        // bug, and we can silently ignore this.
+        //
+        goto exit;
+    }
+
+    fSuccess = FALSE;
+
+    //
+    // The switch statement below handles the states during authentication to
+    // the local Tor client
+    //
+    switch (pAsi->state)
+    {
+        case ConnectingToTorClient:
+        {
+            //
+            // This is the state for the initial connect() call
+            //
+
+            if (wSelectEvent != FD_CONNECT)
+            {
+                //
+                // Ignore all events prior to the FD_CONNECT event, since these
+                // other events would have been for a previously closed socket
+                // which happened to have the same socket number
+                //
+
+                fSuccess = TRUE;
+
+                goto exit;
+            }
+
+            if (wSelectError != 0)
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): Could not connect "
+                    L"socket #%d to the local Tor client (0x%04X). This could "
+                    L"be because the running Tor client cannot receive any "
+                    L"more incoming connections, or because the Tor client is "
+                    L"not running, or because Tortilla.ini is not configured "
+                    L"correctly to access the Tor client via the correct IP "
+                    L"address and TCP port.\n",
+                    pAsi->s,
+                    wSelectError);
+                goto exit;
+            }
+
+            pAsi->state = ConnectedToTorClient;
+            fSuccess = UpdateAsynchronousSocketItemInList(
+                pAsi);
+
+            goto exit;
+        }
+
+        case ConnectedToTorClient:
+        {
+            //
+            // This is the state after we've just connected to the local Tor
+            // client
+            //
+
+            if (wSelectEvent == FD_CLOSE)
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): The connection to "
+                    L"the local Tor client was unexpectedly closed in state "
+                    L"ConnectedToTorClient (%d, 0x%04X, 0x%04X)\n",
+                    pAsi->s,
+                    wSelectEvent,
+                    wSelectError);
+                goto exit;
+            }
+
+            if (!((wSelectEvent == FD_WRITE) && (wSelectError == 0)))
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): Unexpected socket "
+                    L"event received in state ConnectedToTorClient "
+                    L"(%d, 0x%04X, 0x%04X)\n",
+                    pAsi->s,
+                    wSelectEvent,
+                    wSelectError);
+                goto exit;
+            }
+
+            //
+            // Perform authentication handshake with local Tor client
+            //
+            if (SOCKET_ERROR == send(
+                s,
+                "\x05"  // SOCKS5
+                "\x01"  // 1 authentication method
+                "\x00", // No authentication
+                3,
+                0))
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): send() failed in "
+                    L"state ConnectedToTorClient (%d, 0x%08X)\n",
+                    pAsi->s,
+                    WSAGetLastError());
+                goto exit;
+            }
+
+            pAsi->state = AuthenticationSent;
+            fSuccess = UpdateAsynchronousSocketItemInList(
+                pAsi);
+
+            goto exit;
+        }
+
+        case AuthenticationSent:
+        {
+            //
+            // This is the state after we've just sent the authentication
+            // string to the local Tor client
+            //
+
+            if (wSelectEvent == FD_CLOSE)
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): The connection to "
+                    L"the local Tor client was unexpectedly closed in state "
+                    L"AuthenticationSent (%d, 0x%04X, 0x%04X)\n",
+                    pAsi->s,
+                    wSelectEvent,
+                    wSelectError);
+                goto exit;
+            }
+            
+            if ((wSelectEvent == FD_WRITE) && (wSelectError == 0))
+            {
+                fSuccess = TRUE;
+                goto exit;
+            }
+
+            if (!((wSelectEvent == FD_READ) && (wSelectError == 0)))
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): Unexpected socket "
+                    L"event received in state AuthenticationSent "
+                    L"(%d, 0x%04X, 0x%04X)\n",
+                    pAsi->s,
+                    wSelectEvent,
+                    wSelectError);
+                goto exit;
+            }
+
+            BYTE abSocksAuthenticationResponse[2];
+            if (sizeof(abSocksAuthenticationResponse) != recv(
+                s,
+                (char*)abSocksAuthenticationResponse,
+                sizeof(abSocksAuthenticationResponse),
+                0))
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): recv() failed in "
+                    L"state AuthenticationSent (%d, 0x%08X)\n",
+                    pAsi->s,
+                    WSAGetLastError());
+                goto exit;
+            }
+
+            if (!((abSocksAuthenticationResponse[0] == 0x05) && // SOCKS5
+                (abSocksAuthenticationResponse[1] == 0x00)))    // No auth
+            {
+                Log(
+                    Red,
+                    L"Error in AsynchronousSocketEngine(): Could not "
+                    L"authenticate to local Tor client\n");
+                goto exit;
+            }
+
+            pAsi->state = Authenticated;
+            if (!UpdateAsynchronousSocketItemInList(
+                pAsi))
+            {
+                goto exit;
+            }
+        }
+    }
+
+    fSuccess = TRUE;
+
+    //
+    // By this point, the state is either Authenticated or post-Authenticated
+    //
+
+    if (pAsi->fDnsQuery)
+    {
+        ProcessAsynchronousDnsEvent(
+            pAsi,
+            wSelectEvent,
+            wSelectError);
+    }
+    else
+    {
+        ProcessAsynchronousTcpEvent(
+            pAsi,
+            wSelectEvent,
+            wSelectError);
+    }
+
+exit:
+    if (!fSuccess)
+    {
+        if (pAsi->fDnsQuery)
+        {
+            Log(
+                Red,
+                L"Failed to resolve DNS query for %S\n",
+                pAsi->szQueriedNameOrIp);
+
+            //
+            // Send a DNS_RCODE_SERVFAIL response to the virtual machine
+            //
+            SendDnsResponse(
+                (FULL_DNS_PACKET*)pAsi->abPacket,
+                pAsi->cbPacket,
+                FALSE,
+                pAsi->fTypeAQuery,
+                0,
+                NULL,
+                0);
+        }
+        RemoveAsynchronousSocketItemFromList(
+            pAsi->s,
+            TRUE);
+    }
+
+    return 0;
+}
+
+/*! 
+    @brief Creates a hidden window for use by WSAAsyncSelect()
+ 
+    @param[in] arglist The first argument in arglist is a handle to the event
+                       to be signaled when this function finishes. The second
+                       argument in arglist is a pointer to a BOOL which
+                       signifies the success or failure of this function.
+    @return On failure, returns 0; on success, doesn't return
+*/
+UINT
+__stdcall
+StartAsynchronousSocketEngine (
+    VOID* arglist
+    )
+{
+    WNDCLASS wndclass;
+    ATOM atomClass;
+    MSG msg;
+    HANDLE hSocketEngineEvent;
+    BOOL* pfSuccess;
+
+    //
+    // Extract function arguments
+    //
+    hSocketEngineEvent = (HANDLE)((VOID**)arglist)[0];
+    pfSuccess = (BOOL*)((VOID**)arglist)[1];
+
+    //
+    // The code in StartAsynchronousSocketEngine() has not yet successfully
+    // executed
+    //
+    *pfSuccess = FALSE;
+ 
+    //
+    // Register the "Tortilla" window class with the AsynchronousSocketEngine
+    // window procedure
+    //
+    memset(
+        &wndclass,
+        0,
+        sizeof(wndclass));
+    wndclass.lpszClassName = L"Tortilla";
+    wndclass.lpfnWndProc = AsynchronousSocketEngine;
+    atomClass = RegisterClass(&wndclass);
+    if (atomClass == 0)
+    {
+        Log(
+            Red,
+            L"\nError in StartAsynchronousSocketEngine(): RegisterClass()"
+            L"failed (0x%08X)\n",
+            GetLastError());
+        SetEvent(hSocketEngineEvent);
+        return 0;
+    }
+ 
+    //
+    // Create the AsynchronousSocketEngine window
+    //
+    g_hwndAsynchronousSocketEngine = CreateWindow(
+        (LPCTSTR)atomClass,
+        NULL,
+        0,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        CW_USEDEFAULT,
+        NULL,
+        NULL,
+        NULL,
+        NULL);
+    if (g_hwndAsynchronousSocketEngine == NULL)
+    {
+        Log(
+            Red,
+            L"\nError in StartAsynchronousSocketEngine(): CreateWindow()"
+            L"failed (0x%08X)\n",
+            GetLastError());
+        SetEvent(hSocketEngineEvent);
+        return 0;
+    }
+
+    //
+    // The AsynchronousSocketEngine window was successfully created
+    //
+    *pfSuccess = TRUE;
+    SetEvent(hSocketEngineEvent);
+ 
+    //
+    // Run the message-pump until the Tortilla process terminates
+    //
+    for(;;)
+    {
+        GetMessage(
+            &msg,
+            g_hwndAsynchronousSocketEngine,
+            0,
+            0);
+        DispatchMessage(
+            &msg);
+    }
+}
+
+/*! 
     @brief Beginning of program execution
  
     @param[in] argc Number of arguments passed to program from command line
@@ -3802,6 +4770,10 @@ wmain (
     HANDLE hToTortillaFileMapping;
     BYTE* abToTortillaFileMapping;
     HANDLE hFromTortillaFileMapping;
+    HANDLE hThread;
+    HANDLE hTcpSynEngineEvent;
+    VOID* aObjects[2];
+    BOOL fSuccess;
 
     DWORD dwNumberOfBytesRead;
     BYTE* abBuffer;
@@ -3810,7 +4782,6 @@ wmain (
     FULL_DHCP_PACKET* pDhcp;
     FULL_ARP_PACKET* pArp;
     FULL_DNS_PACKET* pDns;
-    PACKET_WITH_SIZE* pPacket;
 
     DWORD dwProcessList;
     CONSOLE_CURSOR_INFO cci;
@@ -3848,7 +4819,7 @@ wmain (
     //
     Log(
         White,
-        L"Tortilla v1.0.1 Beta\n"
+        L"Tortilla v1.1.0 Beta\n"
         L"by Jason Geffner (jason@crowdstrike.com)\n"
         L"and Cameron Gutman (cameron@crowdstrike.com)\n"
         L"CrowdStrike, Inc. Copyright (c) 2013.  All rights reserved.\n"
@@ -3911,6 +4882,19 @@ wmain (
         FALSE,
         NULL);
     if (g_hActiveSynMutex == NULL)
+    {
+        Log(
+            Red,
+            L"\nError in wmain(): CreateMutex() failed (0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+    g_pAsynchronousSockets = NULL;
+    g_hAsiMutex = CreateMutex(
+        NULL,
+        FALSE,
+        NULL);
+    if (g_hAsiMutex == NULL)
     {
         Log(
             Red,
@@ -4217,7 +5201,62 @@ wmain (
     {
         Log(
             Red,
-            L"Error in lwIP_init(): Failed to allocate memory\n");
+            L"\nError in lwIP_init(): Failed to allocate memory\n");
+        goto exit;
+    }
+    Log(
+        Cyan,
+        L" done\n");
+
+    //
+    // Initialize asynchronous socket engine
+    //
+    Log(
+        Cyan,
+        L"Initializing asynchronous socket engine...");
+    hTcpSynEngineEvent = CreateEvent(
+        NULL,
+        TRUE,
+        FALSE,
+        NULL);
+    if (hTcpSynEngineEvent == NULL)
+    {
+        Log(
+            Red,
+            L"\nError in wmain(): CreateEvent() failed (0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+    fSuccess = FALSE;
+    aObjects[0] = hTcpSynEngineEvent;
+    aObjects[1] = &fSuccess;
+    hThread = (HANDLE)_beginthreadex(
+        NULL,
+        0,
+        StartAsynchronousSocketEngine,
+        aObjects,
+        0,
+        NULL);
+    if (hThread == 0)
+    {
+		Log(
+			Red,
+			L"\nError in wmain(): _beginthreadex() failed\n");
+        goto exit;
+    }
+    CloseHandle(hThread);
+    if (WAIT_OBJECT_0 != WaitForSingleObject(
+        hTcpSynEngineEvent,
+        INFINITE))
+    {
+		Log(
+			Red,
+			L"\nError in wmain(): WaitForSingleObject() failed (0x%08X)\n",
+            GetLastError());
+        goto exit;
+    }
+    if (!fSuccess)
+    {
         goto exit;
     }
     Log(
@@ -4246,6 +5285,7 @@ wmain (
                 L"Error in wmain(): WaitForSingleObject("
                 L"hToTortillaWrittenEvent, ...) failed (0x%08X)\n",
                 GetLastError());
+
             goto exit;
         }
 
@@ -4302,39 +5342,10 @@ wmain (
                 goto next;
             }
 
-			//
-			// Copy the packet to the heap
-			//
-			pPacket = (PACKET_WITH_SIZE*) malloc(sizeof(PACKET_WITH_SIZE));
-			if (pPacket == NULL)
-			{
-				Log(
-					Red,
-					L"Error in wmain(): malloc(%d) failed\n",
-					sizeof(PACKET_WITH_SIZE));
-				goto next;
-			}
-			pPacket->cbPacket = dwNumberOfBytesRead;
-			memcpy(
-				pPacket->abPacket,
-				abBuffer,
-				dwNumberOfBytesRead);
-
-			//
-			// Asynchonously process the TCP connect
-			//
-			if (-1 == _beginthreadex(
-				NULL,
-				0,
-				HandleTcpSyn,
-				pPacket,
-				0,
-				NULL))
-			{
-				Log(
-					Red,
-					L"Error in wmain(): _beginthreadex() failed\n");
-			}
+            HandleDnsOrTcpSyn(
+                FALSE,
+                abBuffer,
+                dwNumberOfBytesRead);
 
 			goto next;
         }
@@ -4354,6 +5365,7 @@ wmain (
             HandleDhcp(
                 abBuffer,
                 dwNumberOfBytesRead);
+
             goto next;
         }
         
@@ -4368,11 +5380,12 @@ wmain (
             HandleArp(
                 abBuffer,
                 dwNumberOfBytesRead);
+
             goto next;
         }
 
         //
-        // If this is a DNS query, call HandleDns()
+        // If this is a DNS query, call HandleDnsOrTcpSyn()
         //
         pDns = (FULL_DNS_PACKET*)abBuffer;
         if ((dwNumberOfBytesRead > sizeof(FULL_DNS_PACKET)) &&
@@ -4383,39 +5396,10 @@ wmain (
             (pDns->DnsHeader.IsResponse == 0) &&
             (ntohs(pDns->DnsHeader.QuestionCount) == 1))
         {
-            //
-            // Copy the packet to the heap
-            //
-            pPacket = (PACKET_WITH_SIZE*)malloc(sizeof(PACKET_WITH_SIZE));
-            if (pPacket == NULL)
-            {
-                Log(
-                    Red,
-                    L"Error in wmain(): malloc(%d) failed\n",
-                    sizeof(PACKET_WITH_SIZE));
-                goto next;
-            }
-            pPacket->cbPacket = dwNumberOfBytesRead;
-            memcpy(
-                pPacket->abPacket,
+            HandleDnsOrTcpSyn(
+                TRUE,
                 abBuffer,
                 dwNumberOfBytesRead);
-
-            //
-            // Asynchonously process the DNS query
-            //
-            if (-1 == _beginthreadex(
-                NULL,
-                0,
-                HandleDns,
-                pPacket,
-                0,
-                NULL))
-            {
-                Log(
-                    Red,
-                    L"Error in wmain(): _beginthreadex() failed\n");
-            }
 
             goto next;
         }
@@ -4431,6 +5415,7 @@ wmain (
 			HandleTcp(
 				abBuffer,
 				dwNumberOfBytesRead);
+
             goto next;
         }
 

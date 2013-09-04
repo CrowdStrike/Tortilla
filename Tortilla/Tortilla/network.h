@@ -1,7 +1,7 @@
 /*!
     @file       network.h
     @author     Jason Geffner (jason@crowdstrike.com)
-    @brief      Tortilla Client v1.0.1 Beta
+    @brief      Tortilla Client v1.1.0 Beta
    
     @details    This product is produced independently from the Tor(r)
                 anonymity software and carries no guarantee from The Tor
